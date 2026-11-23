@@ -48,6 +48,7 @@ import android.os.Looper;
 import android.os.SystemClock;
 import android.provider.Settings;
 import android.text.SpannableString;
+import android.text.SpannableStringBuilder;
 import android.text.Spanned;
 import android.text.TextPaint;
 import android.text.TextUtils;
@@ -209,6 +210,10 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     private final Runnable turnTick = this::updatePanel;
     /** config.xml show_stats, overridable by a theme. Off: the line is gone and nothing is read. */
     private boolean showStats;
+    /** config.xml stats_bars: with show_stats, RAM and ROM as two labelled bars instead of the text line. */
+    private boolean statsBars;
+    /** stats_bars: width of the label column, the wider of the two labels plus a gap, measured once. */
+    private int statsLabelPx;
     /** config.xml inputs_connected_only: the Inputs menu lists only connected inputs, the rest behind "More inputs". */
     private boolean inputsConnectedOnly;
     /** config.xml inputs_cec_state_only: only CEC device rows show a connection state, bare HDMI ports none. */
@@ -588,6 +593,15 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         // The rotation runs on the clock that never jumps: setting the TV's time must not stall or stretch a turn.
         rotationStart = SystemClock.elapsedRealtime();
         showStats = cfg.showStats;
+        statsBars = getResources().getBoolean(R.bool.stats_bars);
+        if (statsBars && stats != null) {
+            stats.setSingleLine(false);
+            stats.setMaxLines(2);
+            stats.setLineSpacing(4 * getResources().getDisplayMetrics().density, 1f);
+            float widest = Math.max(stats.getPaint().measureText(STATS_MEMORY),
+                    stats.getPaint().measureText(STATS_STORAGE));
+            statsLabelPx = Math.round(widest + 14 * getResources().getDisplayMetrics().density);
+        }
         inputsConnectedOnly = cfg.inputsConnectedOnly;
         inputsCecStateOnly = cfg.inputsCecStateOnly;
         shamsi = cfg.shamsiDate;
@@ -2296,7 +2310,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             @Override
             public void run() {
                 if (statsBg != bg) return;
-                String line = readStatsLine();
+                CharSequence line = statsBars ? readStatsBars() : readStatsLine();
                 handler.post(() -> {
                     if (showStats && stats != null && statsBg == bg) stats.setText(line);
                 });
@@ -2342,6 +2356,32 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         String free = formatGb(getResources(), Environment.getDataDirectory().getFreeSpace());
         if (!free.isEmpty()) appendStat(line, getString(R.string.stats_storage, free));
         return StatsText.forLocale(line.toString(), getResources().getConfiguration().getLocales().get(0));
+    }
+
+    private static final String STATS_MEMORY = "Memory";
+    private static final String STATS_STORAGE = "Internal Storage";
+
+    /** stats_bars: "Memory [bar] 75%" over "Internal Storage [bar] 57%", used shares of memory and internal storage. Off-thread. */
+    private CharSequence readStatsBars() {
+        SpannableStringBuilder sb = new SpannableStringBuilder();
+        long[] mem = memUsedOfTotalMb();
+        if (mem != null && mem[1] > 0) appendBar(sb, STATS_MEMORY, StatsBar.percent(mem[0], mem[1]));
+        java.io.File data = Environment.getDataDirectory();
+        long total = data.getTotalSpace();
+        if (total > 0) {
+            if (sb.length() > 0) sb.append('\n');
+            appendBar(sb, STATS_STORAGE, StatsBar.percent(total - data.getFreeSpace(), total));
+        }
+        return sb;
+    }
+
+    private void appendBar(SpannableStringBuilder sb, String label, int percent) {
+        float d = getResources().getDisplayMetrics().density;
+        int start = sb.length();
+        sb.append(label);
+        sb.setSpan(new StatsBar(percent, statsLabelPx, Math.round(170 * d), Math.round(6 * d)),
+                start, sb.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        sb.append("  ").append(String.valueOf(percent)).append('%');
     }
 
     // -1: need another sample. -2: this source cannot be read (Android 9 hides /proc/stat from apps).
